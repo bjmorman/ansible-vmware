@@ -1,0 +1,3 @@
+- name: start services
+  command: "avmaint sched start --ava"
+  register: start_svc

@@ -1,0 +1,120 @@
+#TODO: add status% to retry loops for more verbosity 
+#TODO: improved handling and verification of service start
+- name: ensure last checkpoint, hfscheck and gc are not executing
+  command: status.dpn
+  register: status
+  until:
+  - not status.stdout | search("Hfscheck in progress")
+  - not status.stdout | search("Checkpoint in progress")
+  - not status.stdout | search("GC in progress")
+  delay: 300
+  retries: 100
+  failed_when: (status.stdout | search("Hfscheck in progress")) or
+               (status.stdout | search("Checkpoint in progress")) or
+               (status.stdout | search("GC in progress"))
+  changed_when: false
+  tags:
+  - always
+
+- name: ensure scheduled services are not running
+  command: "avmaint sched stop --ava"
+  register: status_backups
+  when: (status.stdout is defined and not status.stdout | search("Scheduler is STOPPED"))
+  failed_when: not status_backups.stdout | search("MSG_ERR_NONE")
+  changed_when: status_backups.stdout | search("MSG_ERR_NONE")
+  tags:
+  - always
+
+- name: ensure a checkpoint is executed and completes as the last command executed
+  command: "avmaint checkpoint --ava"
+  register: checkpoint_status
+  failed_when: (checkpoint_status.stdout is defined and not checkpoint_status.stdout | search("false"))
+  changed_when: false
+  tags:
+  - always
+
+- name: ensure hfscheck is not in progress before proceeding
+  command: status.dpn
+  register: status_result
+  until: not status_result.stdout | search("Hfscheck in progress")
+  delay: 300
+  retries: 100
+  changed_when: false
+  tags:
+  - always
+
+- name: ensure hfscheck executes
+  command: "avmaint hfscheck --ava --full"
+  register: status_hfscheck
+  tags:
+  - hfscheck
+
+- name: ensure hfscheck is not in progress before proceeding
+  command: status.dpn
+  register: status_result
+  until: not status_result.stdout | search("Hfscheck in progress")
+  delay: 300
+  retries: 100
+  changed_when: false
+  tags:
+  - hfscheck
+
+- name: gather checkpoint listing
+  shell: "cplist | tail -n2"
+  register: status_cp
+  failed_when:
+  - (status_cp.stdout is defined and not status_cp.stdout | search(" valid hfs "))
+    changed_when: false
+  tags:
+  - hfscheck
+
+- name: ensure hfscheck is completed
+  command: "avmaint hfscheckstatus --ava | grep status="
+  register: status_hfscheck
+  failed_when: status_hfscheck.stdout is defined and status_hfscheck.stdout | search("hfscheck")
+  changed_when: false
+  tags:
+  - gc
+  - hfscheck
+
+- name: query garbage collection status
+  shell: "avmaint gcstatus"
+  register: status_gc_query
+  tags:
+  - gc
+
+- name: ensure a garbage collection occurs if it is not already running
+  command: "avmaint garbagecollect --timeout=3600 --ava"
+  register: results_gc
+  when:
+  - status_gc_query.stdout is defined
+  - status_gc_query.stdout | search("idle")
+  failed_when: results_gc|failed
+  tags:
+  - gc
+
+- name: ensure gc is not in progress before proceeding
+  shell: "avmaint gcstatus | grep status="
+  register: status_gc
+  until: status_gc.stdout | search("idle")
+  delay: 300
+  retries: 100
+  changed_when: false
+  tags:
+  - gc
+
+- name: verify services are running
+  command: "dpnctl status"
+  register: status_svc
+  changed_when: (status_svc.stdout is defined and not status_svc.stdout | search("gsan status':' up")) or
+                (status_svc.stdout is defined and not status_svc.stdout | search("MCS status':' up")) or
+                (status_svc.stdout is defined and not status_svc.stdout | search("emt status':' up")) or
+                (status_svc.stdout is defined and not status_svc.stdout | search("Backup scheduler status':' up")) or
+                (status_svc.stdout is defined and not status_svc.stdout | search("Maintenance windows scheduler status':' enabled")) or
+                (status_svc.stdout is defined and not status_svc.stdout | search("Unattended startup status':' enabled")) or
+                (status_svc.stdout is defined and not status_svc.stdout | search("avinstaller status':' up")) or
+                (status_svc | changed)
+  failed_when: false
+  notify: start services
+  tags:
+  - always
